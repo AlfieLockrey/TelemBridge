@@ -2,7 +2,6 @@
 #include <WiFi.h>
 #include <WiFiClient.h>
 #include <WiFiAP.h>
-// #include <BluetoothSerial.h> // Removed if not used
 #include <TinyPICO.h>
 #include <Wire.h>
 #include <Adafruit_SSD1306.h>
@@ -23,6 +22,7 @@ TinyPICO tp;
 #define TCP_PORT 5760 // Custom port for your TCP server
 #define REPORT_INTERVAL 1000 // in milliseconds
 #define USB_TIMEOUT 5000 // 5 seconds
+#define BUFFER_SIZE 512 // Buffer size for read/write operations
 
 HardwareSerial TelemSerial(2); // Use UART2
 unsigned long lastTime = 0;
@@ -55,6 +55,13 @@ ClientState currentClient = {WiFiClient(), false};
 // USB Connection Tracking
 bool usbConnected = false;
 unsigned long usbLastActivity = 0;
+
+// Buffers for data handling
+uint8_t clientBuffer[BUFFER_SIZE];
+size_t clientBufferLength = 0;
+
+uint8_t serialBuffer[BUFFER_SIZE];
+size_t serialBufferLength = 0;
 
 // Function declarations
 void startWiFiAP();
@@ -135,17 +142,25 @@ void handleClient() {
     WiFiClient client = currentClient.client;
 
     // Handle incoming data from the client
-    while (client.available()) {
-      char c = client.read();
-      TelemSerial.write(c);
-      uploadBytes++;
+    if (client.available()) {
+      clientBufferLength = client.read(clientBuffer, BUFFER_SIZE);
+      if (clientBufferLength > 0) {
+        size_t bytesWritten = TelemSerial.write(clientBuffer, clientBufferLength);
+        if (bytesWritten > 0) {
+          uploadBytes += bytesWritten;
+        }
+      }
     }
 
     // Handle outgoing data to the client
-    while (TelemSerial.available()) {
-      char c = TelemSerial.read();
-      client.write(c);
-      downloadBytes++;
+    if (TelemSerial.available()) {
+      serialBufferLength = TelemSerial.read(serialBuffer, BUFFER_SIZE);
+      if (serialBufferLength > 0) {
+        size_t bytesWritten = client.write(serialBuffer, serialBufferLength);
+        if (bytesWritten > 0) {
+          downloadBytes += bytesWritten;
+        }
+      }
     }
 
     // Check if client is still connected
@@ -166,12 +181,16 @@ void loop() {
     }
 
     // Handle USB Serial data
-    while (Serial.available()) {
-      char c = Serial.read();
-      TelemSerial.write(c);
-      uploadBytes++;
-      usbConnected = true;
-      usbLastActivity = millis();
+    if (Serial.available()) {
+      size_t bytesRead = Serial.readBytes(serialBuffer, BUFFER_SIZE);
+      if (bytesRead > 0) {
+        size_t bytesWritten = TelemSerial.write(serialBuffer, bytesRead);
+        if (bytesWritten > 0) {
+          uploadBytes += bytesWritten;
+        }
+        usbConnected = true;
+        usbLastActivity = millis();
+      }
     }
   } else {
     // Handle Wi-Fi client connections
@@ -181,11 +200,15 @@ void loop() {
 
     // If USB switch-over is disabled, still handle USB Serial data without affecting Wi-Fi
     if (Serial && !ENABLE_USB_SWITCHOVER) {
-      while (Serial.available()) {
-        char c = Serial.read();
-        TelemSerial.write(c);
-        uploadBytes++;
-        // Optionally track USB activity if needed
+      if (Serial.available()) {
+        size_t bytesRead = Serial.readBytes(serialBuffer, BUFFER_SIZE);
+        if (bytesRead > 0) {
+          size_t bytesWritten = TelemSerial.write(serialBuffer, bytesRead);
+          if (bytesWritten > 0) {
+            uploadBytes += bytesWritten;
+          }
+          // Optionally track USB activity if needed
+        }
       }
     }
   }
