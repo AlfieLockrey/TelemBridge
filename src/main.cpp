@@ -10,25 +10,12 @@
 #include "esp_task_wdt.h"
 #include "globals.h"
 
-// Initialize the Adafruit SSD1306 display (Defined here)
-Adafruit_SSD1306 display(128, 64, &Wire, -1);
-
-// Initialize the TinyPICO library (Defined here)
-TinyPICO tp;
-
-// Serial and Wi-Fi parameters
-#define SERIAL_BUFFER_SIZE 1024
-#define WDT_TIMEOUT 10 // Watchdog Timer timeout in seconds
-#define TCP_PORT 5760 // Custom port for your TCP server
-#define REPORT_INTERVAL 1000 // in milliseconds
-#define USB_TIMEOUT 5000 // 5 seconds
-#define BUFFER_SIZE 512 // Buffer size for read/write operations
-
+// Telemetry Radio Serial Setup
 HardwareSerial TelemSerial(2); // Use UART2
+
+// Reporting Setup
 unsigned long lastTime = 0;
 unsigned long timeInterval = REPORT_INTERVAL; // Time interval in milliseconds
-unsigned long uploadBytes = 0;
-unsigned long downloadBytes = 0;
 
 // Watchdog Timer reset tracking
 unsigned long lastWDTReset = 0;
@@ -37,31 +24,21 @@ unsigned long lastWDTReset = 0;
 WiFiServer server(TCP_PORT);
 bool wifiEnabled = false;
 
-// Global Variables (Defined here)
-volatile int uploadRate = 0;
-volatile int downloadRate = 0;
-
-// USB Switch-Over Control Flag (Set to false to disable switch-over)
-const bool ENABLE_USB_SWITCHOVER = false; // Set to 'false' to keep Wi-Fi active during USB debugging
-
 // Client State Management
 struct ClientState {
   WiFiClient client;
   bool connected;
 };
-
 ClientState currentClient = {WiFiClient(), false};
-
-// USB Connection Tracking
-bool usbConnected = false;
-unsigned long usbLastActivity = 0;
 
 // Buffers for data handling
 uint8_t clientBuffer[BUFFER_SIZE];
-size_t clientBufferLength = 0;
 
 uint8_t serialBuffer[BUFFER_SIZE];
-size_t serialBufferLength = 0;
+
+// Rate tracking variables
+volatile unsigned long uploadedBytes = 0;
+volatile unsigned long downloadedBytes = 0;
 
 // Function declarations
 void startWiFiAP();
@@ -119,46 +96,61 @@ void setup() {
 void startWiFiAP() {
   const char* ssid = "TelemBridge_ESP32";
   const char* password = "13111999"; // Use a strong password
-  WiFi.softAP(ssid, password);
-  server.begin();
-  wifiEnabled = true;
-  Serial.println("Wi-Fi Access Point started.");
+  if (WiFi.softAP(ssid, password)) {
+    server.begin();
+    wifiEnabled = true;
+    Serial.println("Wi-Fi Access Point started.");
+  } else {
+    Serial.println("Failed to start Wi-Fi Access Point.");
+  }
 }
 
 void stopWiFiAP() {
-  WiFi.softAPdisconnect(true);
-  wifiEnabled = false;
-  Serial.println("Wi-Fi Access Point stopped.");
+  if (WiFi.softAPdisconnect(true)) {
+    wifiEnabled = false;
+    Serial.println("Wi-Fi Access Point stopped.");
+  } else {
+    Serial.println("Failed to stop Wi-Fi Access Point.");
+  }
 }
 
 void handleClient() {
   if (!currentClient.connected && server.hasClient()) {
-    currentClient.client = server.available();
-    currentClient.connected = true;
-    Serial.println("New client connected.");
+    WiFiClient newClient = server.available();
+    if (newClient) {
+      if (currentClient.client && currentClient.client.connected()) {
+        // If a client is already connected, reject the new one
+        newClient.stop();
+        Serial.println("Rejected new client: already connected.");
+      } else {
+        currentClient.client = newClient;
+        currentClient.connected = true;
+        Serial.println("New client connected.");
+      }
+    }
   }
 
   if (currentClient.connected) {
-    WiFiClient client = currentClient.client;
+    WiFiClient& client = currentClient.client;
 
     // Handle incoming data from the client
     if (client.available()) {
-      clientBufferLength = client.read(clientBuffer, BUFFER_SIZE);
-      if (clientBufferLength > 0) {
-        size_t bytesWritten = TelemSerial.write(clientBuffer, clientBufferLength);
+      ssize_t bytesRead = client.read(clientBuffer, BUFFER_SIZE);
+      if (bytesRead > 0) {
+        size_t bytesWritten = TelemSerial.write(clientBuffer, bytesRead);
         if (bytesWritten > 0) {
-          uploadBytes += bytesWritten;
+          uploadedBytes += bytesWritten;
         }
       }
     }
 
     // Handle outgoing data to the client
     if (TelemSerial.available()) {
-      serialBufferLength = TelemSerial.read(serialBuffer, BUFFER_SIZE);
-      if (serialBufferLength > 0) {
-        size_t bytesWritten = client.write(serialBuffer, serialBufferLength);
+      ssize_t bytesRead = TelemSerial.read(serialBuffer, BUFFER_SIZE);
+      if (bytesRead > 0) {
+        size_t bytesWritten = client.write(serialBuffer, bytesRead);
         if (bytesWritten > 0) {
-          downloadBytes += bytesWritten;
+          downloadedBytes += bytesWritten;
         }
       }
     }
@@ -173,70 +165,31 @@ void handleClient() {
 }
 
 void loop() {
-  // Check for USB connection only if switch-over is enabled
-  if (ENABLE_USB_SWITCHOVER && Serial) {
-    // If USB is connected, disable Wi-Fi
-    if (wifiEnabled) {
-      stopWiFiAP();
-    }
+  // Reset Watchdog Timer
+  resetWDT();
 
-    // Handle USB Serial data
-    if (Serial.available()) {
-      size_t bytesRead = Serial.readBytes(serialBuffer, BUFFER_SIZE);
-      if (bytesRead > 0) {
-        size_t bytesWritten = TelemSerial.write(serialBuffer, bytesRead);
-        if (bytesWritten > 0) {
-          uploadBytes += bytesWritten;
-        }
-        usbConnected = true;
-        usbLastActivity = millis();
-      }
-    }
-  } else {
-    // Handle Wi-Fi client connections
-    if (wifiEnabled) {
-      handleClient();
-    }
-
-    // If USB switch-over is disabled, still handle USB Serial data without affecting Wi-Fi
-    if (Serial && !ENABLE_USB_SWITCHOVER) {
-      if (Serial.available()) {
-        size_t bytesRead = Serial.readBytes(serialBuffer, BUFFER_SIZE);
-        if (bytesRead > 0) {
-          size_t bytesWritten = TelemSerial.write(serialBuffer, bytesRead);
-          if (bytesWritten > 0) {
-            uploadBytes += bytesWritten;
-          }
-          // Optionally track USB activity if needed
-        }
-      }
-    }
+  // Handle Wi-Fi client connections
+  if (wifiEnabled) {
+    handleClient();
   }
 
-  // Track USB connection timeout only if switch-over is enabled
-  if (ENABLE_USB_SWITCHOVER) {
-    if (usbConnected && (millis() - usbLastActivity > USB_TIMEOUT)) {
-      usbConnected = false;
-      if (!wifiEnabled) {
-        startWiFiAP();
-      }
-    }
-  }
-
-  // Calculate and print rates at intervals
+  
+  // Update Display
   unsigned long currentTime = millis();
   if (currentTime - lastTime >= timeInterval) {
     uploadRate = calculateUploadRate();
     downloadRate = calculateDownloadRate();
-
-    Serial.printf("Upload: %d Bps, Download: %d Bps\n", uploadRate, downloadRate);
-    lastTime = currentTime;
-    uploadBytes = 0;
-    downloadBytes = 0;
     updateDisplay(); // Update the OLED display
+
+    lastTime = currentTime;
+    uploadedBytes = 0;
+    downloadedBytes = 0;
+
+    unsigned long elapsedTime = millis() - currentTime; // Calculate elapsed time
+    // Print the elapsed time to the Serial Monitor in a single line
+    Serial.printf("Display update took: %lu ms\n", elapsedTime);
   }
 
-  resetWDT();
 }
 
 // Function to reset the Watchdog Timer
@@ -246,9 +199,9 @@ void resetWDT() {
 
 // Example implementations of rate calculation
 int calculateUploadRate() {
-  return uploadBytes / (timeInterval / 1000); // Bps
+  return uploadedBytes / (timeInterval / 1000); // Bps
 }
 
 int calculateDownloadRate() {
-  return downloadBytes / (timeInterval / 1000); // Bps
+  return downloadedBytes / (timeInterval / 1000); // Bps
 }
