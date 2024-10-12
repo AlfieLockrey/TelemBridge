@@ -23,8 +23,9 @@ BluetoothSerial SerialBT; // Bluetooth Serial object
 bool btConnected = false;
 
 // Buffers for data handling
-uint8_t clientBuffer[BUFFER_SIZE];
-uint8_t serialBuffer[BUFFER_SIZE];
+unsigned long lastHandleTime = 0;
+uint8_t clientBuffer[CLIENT_BUFFER_SIZE];
+uint8_t serialBuffer[SERIAL_BUFFER_SIZE];
 
 // Rate tracking variables
 volatile unsigned long uploadedBytes = 0;
@@ -34,6 +35,7 @@ volatile unsigned long downloadedBytes = 0;
 void setupBluetooth();
 void handleClient();
 void resetWDT();
+void clearBuffers();
 int calculateUploadRate();
 int calculateDownloadRate();
 
@@ -67,6 +69,9 @@ void setup() {
   // Setup Bluetooth
   setupBluetooth();
 
+  // Clear buffers on boot
+  clearBuffers();
+
   updateDisplay();
 }
 
@@ -76,33 +81,35 @@ void setupBluetooth() {
 }
 
 void handleClient() {
-    // Check if Bluetooth client is connected
-    if (SerialBT.connected()) {
-        // Handle incoming data from the client
-        while (SerialBT.available()) {
-            int bytesRead = SerialBT.read(); // Read a single byte
-            if (bytesRead != -1) { // Check if a byte was read
-                clientBuffer[uploadedBytes % BUFFER_SIZE] = bytesRead; // Store in buffer
-                uploadedBytes++;
-                if (uploadedBytes >= BUFFER_SIZE) {
-                    // Write the whole buffer to Telemetry Serial
-                    TelemSerial.write(clientBuffer, BUFFER_SIZE);
-                    uploadedBytes = 0; // Reset count after writing
-                }
-            }
-        }
+  // Handle incoming data from the client in non-blocking chunks
+  int availableBytes = SerialBT.available();
+  if (availableBytes > 0) {
+    // Read only available bytes, but limit to buffer size
+    int bytesToRead = min(availableBytes, static_cast<int>(CLIENT_BUFFER_SIZE - uploadedBytes));
+    int bytesRead = SerialBT.readBytes(clientBuffer + uploadedBytes, bytesToRead);
 
-        // Handle outgoing data to the client
-        while (TelemSerial.available()) {
-            ssize_t bytesRead = TelemSerial.read(serialBuffer, BUFFER_SIZE);
-            if (bytesRead > 0) {
-                size_t bytesWritten = SerialBT.write(serialBuffer, bytesRead);
-                if (bytesWritten > 0) {
-                    downloadedBytes += bytesWritten;
-                }
-            }
-        }
+    uploadedBytes += bytesRead;
+    if (uploadedBytes >= CLIENT_BUFFER_SIZE) {
+      // Write the whole buffer to Telemetry Serial
+      TelemSerial.write(clientBuffer, CLIENT_BUFFER_SIZE);
+      uploadedBytes = 0; // Reset count after writing
     }
+  }
+
+  // Handle outgoing data to the client in non-blocking chunks
+  availableBytes = TelemSerial.available();
+  if (availableBytes > 0) {
+    // Read only available bytes, but limit to buffer size
+    int bytesToRead = min(availableBytes, SERIAL_BUFFER_SIZE);
+    int bytesRead = TelemSerial.readBytes(serialBuffer, bytesToRead);
+
+    if (bytesRead > 0) {
+      size_t bytesWritten = SerialBT.write(serialBuffer, bytesRead);
+      if (bytesWritten > 0) {
+        downloadedBytes += bytesWritten;
+      }
+    }
+  }
 }
 
 void loop() {
@@ -110,7 +117,13 @@ void loop() {
   resetWDT();
 
   // Handle Bluetooth client connections
-  handleClient();
+  // Check if 30ms have passed since the last call to handleClient
+  if (millis() - lastHandleTime >= 30) {
+    if (SerialBT.connected()) {
+      handleClient();
+    }
+    lastHandleTime = millis(); // Update the last call time
+  }
 
   // Update Display
   unsigned long currentTime = millis();
@@ -139,4 +152,11 @@ int calculateUploadRate() {
 
 int calculateDownloadRate() {
   return downloadedBytes / (timeInterval / 1000); // Bps
+}
+
+void clearBuffers() {
+    memset(clientBuffer, 0, sizeof(clientBuffer));  // Clear client buffer
+    memset(serialBuffer, 0, sizeof(serialBuffer));  // Clear serial buffer
+    uploadedBytes = 0;
+    downloadedBytes = 0;
 }
