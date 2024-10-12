@@ -14,9 +14,9 @@ extern volatile int uploadRate;
 extern volatile int downloadRate;
 
 // Configuration parameters (Performance Based)
-#define TCP_PORT 5760
+#define BT_SPP_NAME "TelemBridge_BT" // Bluetooth SPP name
 #define REPORT_INTERVAL 10000 // in milliseconds
-#define BUFFER_SIZE 4096 // Buffer size for read/write operations
+#define BUFFER_SIZE 280 // Buffer size for read/write operations
 
 // Non-performance related configuration
 #define WDT_TIMEOUT 10 // Watchdog Timer timeout in seconds
