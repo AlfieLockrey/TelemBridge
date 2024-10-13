@@ -18,9 +18,13 @@ extern volatile int downloadRate;
 #define REPORT_INTERVAL 10000 // in milliseconds
 #define UPDATE_INTERVAL 10000 // in milliseconds
 
-#define SERIAL_BUFFER_SIZE 512 // Buffer size for read/write operations
-#define CLIENT_BUFFER_SIZE 512 // Buffer size for read/write operations
-
+// Buffer size for read/write operations
+/* 
+#define SERIAL_BUFFER_SIZE 280 // Max size of a mavlink2 message
+#define CLIENT_BUFFER_SIZE 280 // Max size of a mavlink2 message
+ */
+#define SERIAL_BUFFER_SIZE 120 // BT SPP 120 Byte Limit
+#define CLIENT_BUFFER_SIZE 120
 
 // Non-performance related configuration
 #define WDT_TIMEOUT 15 // Watchdog Timer timeout in seconds

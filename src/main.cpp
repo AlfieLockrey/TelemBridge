@@ -64,7 +64,7 @@ void setup() {
   // Initialize Serial for debugging
   Serial.begin(57600);
   while (!Serial) {
-    delay(5); // Wait for USB serial to connect
+    delay(1000); // Wait for USB serial to connect
   }
   Serial.println("USB Serial connected.");
 
@@ -132,17 +132,18 @@ void loop() {
 
 void Serial2BT() {
   // Handle data from Telemetry Serial to Bluetooth
-  if (TelemSerial.available()) {
-    while (TelemSerial.available()) {
-      int bytes2read = min(TelemSerial.available(), SERIAL_BUFFER_SIZE); // SERIAL_BUFFER_SIZE = 32
+  int bytesAvailable = TelemSerial.available(); 
+  int bytes2read = min(bytesAvailable, SERIAL_BUFFER_SIZE);
+  if (bytes2read>0) {
+      //int bytes2read = min(TelemSerial.available(), SERIAL_BUFFER_SIZE); // SERIAL_BUFFER_SIZE = 32
       
-      if (TelemSerial.available() > bytes2read) {
+      if (bytes2read < bytesAvailable) {
         Serial.print("Telem Bytes available > Buffer: ");
         Serial.println(TelemSerial.available());
       }
 
       int bytesRead = TelemSerial.readBytes(serialBuffer, bytes2read);
-
+/* 
       // Ensure there are non-zero bytes
       bool hasNonZeroBytes = false;
       for (int i = 0; i < bytesRead; i++) {
@@ -151,27 +152,18 @@ void Serial2BT() {
           break;
         }
       }
-
+ */
       // Only write to Bluetooth if there are non-zero bytes
-      if (hasNonZeroBytes) {
-        delay(50);
+      //if (hasNonZeroBytes) {
+      if (1) {
         unsigned long startTimeWrite = micros();  // Track the write time
 
         // Attempt to write data to Bluetooth
-        
         int bytesWritten = SerialBT.write(serialBuffer, bytesRead);
 
         // Check if we successfully wrote the data and how long it took
         unsigned long endTimeWrite = micros();
         unsigned long durationWrite = endTimeWrite - startTimeWrite;
-
-        if (bytesWritten < bytesRead) {
-          Serial.print("Bytes Read: ");
-          Serial.print(bytesRead);
-          Serial.print(", bytes Written: ");
-          Serial.println(bytesWritten);
-        }
-
 
         // If duration is too long, consider introducing pacing here
         if (durationWrite > 10000) {
@@ -181,7 +173,6 @@ void Serial2BT() {
         Serial.println("No non-zero bytes to send from Telemetry.");
       }
     }
-  }
 }
 
 /* void Serial2BT() {
@@ -247,22 +238,21 @@ void BT2Serial() {
 
 void handleDataFlow() {
   // Start timer for Serial2BT
-  unsigned long startTimeSerial2BT = micros();
+  //unsigned long startTimeSerial2BT = micros();
   Serial2BT();  // Handle data from Telemetry Serial to Bluetooth
-  unsigned long endTimeSerial2BT = micros();
+  //unsigned long endTimeSerial2BT = micros();
 
   // Start timer for BT2Serial
-  unsigned long startTimeBT2Serial = micros();
+  //unsigned long startTimeBT2Serial = micros();
   BT2Serial();  // Handle data from Bluetooth to Telemetry Serial
-  unsigned long endTimeBT2Serial = micros();
+  //unsigned long endTimeBT2Serial = micros();
 
-  unsigned long durationSerial2BT = endTimeSerial2BT - startTimeSerial2BT;
-  unsigned long durationBT2Serial = endTimeBT2Serial - startTimeBT2Serial;
-  // Compressed timing information in single print statements
+  //unsigned long durationSerial2BT = endTimeSerial2BT - startTimeSerial2BT;
+  //unsigned long durationBT2Serial = endTimeBT2Serial - startTimeBT2Serial;
   //Serial.println("Serial2BT: " + String(durationSerial2BT) + " us");
   //Serial.println("BT2Serial: " + String(durationBT2Serial) + " us");
 
-  // delay(50);
+  // delay(2);
 }
 
 // Function to reset the Watchdog Timer
