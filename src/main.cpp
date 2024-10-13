@@ -11,11 +11,11 @@
 #include "driver/uart.h"
 
 // Telemetry Radio Serial Setup
-HardwareSerial TelemSerial(2); // Use UART2
+HardwareSerial TelemSerial(1); // Use UART2
 
 // Reporting Setup
 unsigned long lastTime = 0;
-unsigned long timeInterval = REPORT_INTERVAL; // Time interval in milliseconds
+unsigned long timeInterval = UPDATE_INTERVAL; // Time interval in milliseconds
 
 // Watchdog Timer reset tracking
 unsigned long lastWDTReset = 0;
@@ -45,7 +45,7 @@ unsigned long totalSerialBytesIn = 0;   // Total bytes received from Telemetry S
 unsigned long totalSerialBytesOut = 0;  // Total bytes sent to Telemetry Serial
 
 unsigned long lastReportTime = 0; // Time tracking for reporting data rate
-unsigned long reportInterval = 10000; // 10 seconds reporting interval
+unsigned long reportInterval = REPORT_INTERVAL; // 10 seconds reporting interval
 
 // Function declarations
 void setupBluetooth();
@@ -53,12 +53,12 @@ void handleDataFlow();
 void handleBTtoSerial();
 void handleSerialtoBT();
 void resetWDT();
-void clearBuffers();
 void reportLostPackets(const char* source, uint8_t actualSeq, uint8_t expectedSeq, uint8_t msgId);
 void reportTotalBytes();
 bool detectMavlinkMessage(const uint8_t* buffer, int length, mavlink_message_t& msg, mavlink_status_t& status, int& discardedBytes);
 void forwardMavlinkMessageToBT(const mavlink_message_t& msg);
 void forwardMavlinkMessageToSerial(const mavlink_message_t& msg);
+void clearTelemSerial();
 
 void setup() {
   // Initialize Serial for debugging
@@ -90,8 +90,7 @@ void setup() {
   // Setup Bluetooth
   setupBluetooth();
 
-  // Clear buffers on boot
-  clearBuffers();
+  //update Display
   updateDisplay();
 }
 
@@ -100,165 +99,175 @@ void setupBluetooth() {
   Serial.println("Bluetooth SPP initialized.");
 }
 
-void handleDataFlow() {
-  // If client connected, handle data flow. Else clear the buffers.
-  if (SerialBT.connected()) {
-    handleBTtoSerial();   // Handle data from Bluetooth to Telemetry Serial
-    handleSerialtoBT();   // Handle data from Telemetry Serial to Bluetooth
-  }
-}
-
-void handleSerialtoBT() {
-  int bytesAvailable = TelemSerial.available();  // Check how many bytes are available in the buffer
-
-  while (bytesAvailable > 0) {
-    int bytesToRead = min(bytesAvailable, SERIAL_BUFFER_SIZE);  // Read up to buffer size
-    int bytesRead = TelemSerial.readBytes(serialBuffer, bytesToRead);  // Read multiple bytes
-
-    totalSerialBytesIn += bytesRead; // Track total bytes received from Serial
-
-    mavlink_message_t msg;
-    static mavlink_status_t status;  // Persistent status
-    int discardedBytes = 0;
-
-    // Detect MAVLink message and handle discarded bytes
-    if (detectMavlinkMessage(serialBuffer, bytesRead, msg, status, discardedBytes)) {
-      // Forward valid MAVLink message to Bluetooth
-      forwardMavlinkMessageToBT(msg);
-      lastSerialSeq = msg.seq;
-    }
-
-    // Update the count of downloaded bytes and account for discarded bytes
-    downloadedBytes += (bytesRead - discardedBytes);
-
-    // Recheck how many bytes are still available after processing
-    bytesAvailable = TelemSerial.available();
-  }
-}
-
-void handleBTtoSerial() {
-  // Handle incoming data from Bluetooth to Telemetry Radio
-  int availableBytes = SerialBT.available();
-  if (availableBytes > 0) {
-    // Read only available bytes, but limit to buffer size
-    int bytesToRead = min(availableBytes, static_cast<int>(CLIENT_BUFFER_SIZE));
-    int bytesRead = SerialBT.readBytes(clientBuffer, bytesToRead);
-
-    totalBTBytesIn += bytesRead; // Track total bytes received from Bluetooth
-
-    mavlink_message_t msg;
-    static mavlink_status_t status;
-    int discardedBytes = 0;
-
-    // Detect MAVLink message and handle discarded bytes
-    if (detectMavlinkMessage(clientBuffer, bytesRead, msg, status, discardedBytes)) {
-      // Forward valid MAVLink message to Telemetry Serial
-      forwardMavlinkMessageToSerial(msg);
-    }
-
-    // Account for bytes successfully sent to serial
-    uploadedBytes += (bytesRead - discardedBytes);
-  }
-}
-
 void loop() {
   // Reset Watchdog Timer
   resetWDT();
 
-  // Handle serial data flow both ways
-  handleDataFlow();
+  if (SerialBT.hasClient()) {
+    if (!btConnected) {
+      clearTelemSerial();  // Clear the telemetry buffer before handling
+      btConnected = true;
+      Serial.println("Client Connected, cleared Serial Buffer");
+    }
+    handleDataFlow();
+  } else {
+    btConnected = false;
+   
+  }
 
-  // Update Display every 5 seconds
+  // Update Display 
   unsigned long currentTime = millis();
   if (currentTime - lastTime >= timeInterval) {
-    Serial.println("Updating Display");
+    // Serial.println("Updating Display");
     updateDisplay(); // Update the OLED display
     lastTime = currentTime;
   }
 
-  // Report total bytes every 10 seconds
+  // Report total bytes
   if (currentTime - lastReportTime >= reportInterval) {
-    reportTotalBytes();
+    // reportTotalBytes();
     lastReportTime = currentTime;
   }
+}
+
+void Serial2BT() {
+  // Handle data from Telemetry Serial to Bluetooth
+  if (TelemSerial.available()) {
+    while (TelemSerial.available()) {
+      int bytes2read = min(TelemSerial.available(), SERIAL_BUFFER_SIZE); // SERIAL_BUFFER_SIZE = 32
+      
+      if (TelemSerial.available() > bytes2read) {
+        Serial.print("Telem Bytes available > Buffer: ");
+        Serial.println(TelemSerial.available());
+      }
+
+      int bytesRead = TelemSerial.readBytes(serialBuffer, bytes2read);
+
+      // Ensure there are non-zero bytes
+      bool hasNonZeroBytes = false;
+      for (int i = 0; i < bytesRead; i++) {
+        if (serialBuffer[i] != 0) {
+          hasNonZeroBytes = true;
+          break;
+        }
+      }
+
+      // Only write to Bluetooth if there are non-zero bytes
+      if (hasNonZeroBytes) {
+        delay(50);
+        unsigned long startTimeWrite = micros();  // Track the write time
+
+        // Attempt to write data to Bluetooth
+        
+        int bytesWritten = SerialBT.write(serialBuffer, bytesRead);
+
+        // Check if we successfully wrote the data and how long it took
+        unsigned long endTimeWrite = micros();
+        unsigned long durationWrite = endTimeWrite - startTimeWrite;
+
+        if (bytesWritten < bytesRead) {
+          Serial.print("Bytes Read: ");
+          Serial.print(bytesRead);
+          Serial.print(", bytes Written: ");
+          Serial.println(bytesWritten);
+        }
+
+
+        // If duration is too long, consider introducing pacing here
+        if (durationWrite > 10000) {
+          Serial.println("Bluetooth write is slow, consider optimizing buffer or connection.");
+        }
+      } else {
+        Serial.println("No non-zero bytes to send from Telemetry.");
+      }
+    }
+  }
+}
+
+/* void Serial2BT() {
+  // Handle data from Telemetry Serial to Bluetooth
+  if (TelemSerial.available()) {
+      int bytes2read = min(TelemSerial.available(), SERIAL_BUFFER_SIZE);
+      
+      if (TelemSerial.available() > bytes2read) {
+        Serial.print("Telem Bytes available > Buffer: ");
+        Serial.println(TelemSerial.available());
+      }
+
+      int bytesRead = TelemSerial.readBytes(serialBuffer, bytes2read);
+
+      // Iterate through the buffer and check for non-zero bytes
+      bool hasNonZeroBytes = false;
+      for (int i = 0; i < bytesRead; i++) {
+        if (serialBuffer[i] != 0) {
+          hasNonZeroBytes = true;  // Found non-zero byte
+          break;  // No need to check further, exit the loop early
+        }
+      }
+
+      // Only write to Bluetooth if there are non-zero bytes
+      if (hasNonZeroBytes) {
+        SerialBT.write(serialBuffer, bytesRead);
+      } else {
+        Serial.println("No non-zero bytes to send from Telemetry.");
+      }
+  }
+} */
+
+void BT2Serial() {
+  // Handle data from Bluetooth to Telemetry Serial
+  int bytesAvailable = SerialBT.available();
+  if (bytesAvailable) {
+    int bytes2read = min(bytesAvailable, CLIENT_BUFFER_SIZE);
+    
+    if (bytesAvailable > bytes2read) {
+      Serial.print("BT Bytes available > Buffer: ");
+      Serial.println(bytesAvailable);
+    }
+
+    int bytesRead = SerialBT.readBytes(clientBuffer, bytes2read);
+
+    // Iterate through the buffer and check for non-zero bytes
+    bool hasNonZeroBytes = false;
+    for (int i = 0; i < bytesRead; i++) {
+      if (clientBuffer[i] != 0) {
+        hasNonZeroBytes = true;  // Found non-zero byte
+        break;  // Exit the loop early when non-zero byte is found
+      }
+    }
+
+    // Only write to Telemetry Serial if there are non-zero bytes
+    if (hasNonZeroBytes) {
+      TelemSerial.write(clientBuffer, bytesRead);
+    } else {
+      Serial.println("No non-zero bytes to send from Bluetooth.");
+    }
+  }
+}
+
+void handleDataFlow() {
+  // Start timer for Serial2BT
+  unsigned long startTimeSerial2BT = micros();
+  Serial2BT();  // Handle data from Telemetry Serial to Bluetooth
+  unsigned long endTimeSerial2BT = micros();
+
+  // Start timer for BT2Serial
+  unsigned long startTimeBT2Serial = micros();
+  BT2Serial();  // Handle data from Bluetooth to Telemetry Serial
+  unsigned long endTimeBT2Serial = micros();
+
+  unsigned long durationSerial2BT = endTimeSerial2BT - startTimeSerial2BT;
+  unsigned long durationBT2Serial = endTimeBT2Serial - startTimeBT2Serial;
+  // Compressed timing information in single print statements
+  //Serial.println("Serial2BT: " + String(durationSerial2BT) + " us");
+  //Serial.println("BT2Serial: " + String(durationBT2Serial) + " us");
+
+  // delay(50);
 }
 
 // Function to reset the Watchdog Timer
 void resetWDT() {
   esp_task_wdt_reset();
-}
-
-void clearBuffers() {
-  memset(clientBuffer, 0, sizeof(clientBuffer));  // Clear client buffer
-  memset(serialBuffer, 0, sizeof(serialBuffer));  // Clear serial buffer
-  uploadedBytes = 0;
-  downloadedBytes = 0;
-}
-
-// Function to forward a MAVLink message to Bluetooth
-void forwardMavlinkMessageToBT(const mavlink_message_t& msg) {
-  uint8_t buffer[MAVLINK_MAX_PACKET_LEN];
-  int len = mavlink_msg_to_send_buffer(buffer, &msg);
-
-  if (len > 0) {
-    SerialBT.write(buffer, len);
-    totalBTBytesOut += len; // Track total bytes sent to Bluetooth
-
-    const char* msgType = getMessageType(msg.msgid);
-
-    if (msg.seq != (lastBTSeq + 1) % 256) { // Handling wrap-around
-      lostBTPackets += (msg.seq - lastBTSeq + 256) % 256 - 1;
-      reportLostPackets("Telem", msg.seq, (lastBTSeq + 1) % 256, msg.msgid);
-    }
-    lastBTSeq = msg.seq;
-  } else {
-    Serial.println("Failed to convert MAVLink message.");
-  }
-}
-
-// Function to forward a MAVLink message to Telemetry Serial
-void forwardMavlinkMessageToSerial(const mavlink_message_t& msg) {
-  uint8_t buffer[MAVLINK_MAX_PACKET_LEN];
-  int len = mavlink_msg_to_send_buffer(buffer, &msg);
-
-  if (len > 0) {
-    TelemSerial.write(buffer, len);
-    totalSerialBytesOut += len; // Track total bytes sent to Telemetry Serial
-  } else {
-    Serial.println("Failed to convert MAVLink message for serial forwarding.");
-  }
-}
-
-bool detectMavlinkMessage(const uint8_t* buffer, int length, mavlink_message_t& msg, mavlink_status_t& status, int& discardedBytes) {
-  discardedBytes = 0;
-  for (int i = 0; i < length; ++i) {
-    if (mavlink_parse_char(MAVLINK_COMM_0, buffer[i], &msg, &status)) {
-      // A complete MAVLink message has been detected
-      return true;
-    } else {
-      // No complete MAVLink message, this byte might be discarded
-      discardedBytes++;
-    }
-  }
-  // No full message detected, all bytes might have been discarded
-  return false;
-}
-
-// Function to report lost packets
-void reportLostPackets(const char* source, uint8_t actualSeq, uint8_t expectedSeq, uint8_t msgId) {
-  Serial.print("Lost packet from ");
-  Serial.print(source);
-  Serial.print(" (");
-  Serial.print(lostBTPackets);
-  Serial.print(") : Expected Seq: ");
-  Serial.print(expectedSeq);
-  Serial.print(", Actual Seq: ");
-  Serial.print(actualSeq);
-  Serial.print(", Message ID: ");
-  Serial.print(msgId);
-  Serial.print(", MSG Type: ");
-  Serial.println(getMessageType(msgId));
-  lostBTPackets = 0;
 }
 
 // Function to report total bytes transferred
@@ -278,4 +287,11 @@ void reportTotalBytes() {
   totalBTBytesOut = 0;
   totalSerialBytesIn = 0;
   totalSerialBytesOut = 0;
+}
+
+void clearTelemSerial() {
+  // Clear the telemetry serial buffer by reading and discarding data
+  while (TelemSerial.available()) {
+    TelemSerial.read();  // Read and discard each byte
+  }
 }
